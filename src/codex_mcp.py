@@ -29,9 +29,14 @@ INSTRUCTIONS = """Codex (OpenAI's agent, in the Codex app) is available for comp
 Write and fix code yourself. Hand computer use to codex_computer: open the running app or a site, click
 through it, check that a change looks and works right, take screenshots, save page DOM. Each call opens a
 new chat in the Codex app with the task typed in, and waits until the user presses Enter there (the Codex app
-never sends a prompt that comes from a link). You are blocked while it waits, so BEFORE each call tell the
-user: "Press Enter in the new Codex chat to start it." It returns Codex's report and the files it saved. If it
-reports a problem in your change, fix the code and call it again (that needs another Enter)."""
+never sends a prompt that comes from a link). You are blocked while it waits, so tell the user BEFORE the call.
+Before your FIRST codex_computer call in this session, tell the user exactly this sentence:
+"Heads up: each handoff opens a new Codex chat that you start by pressing Enter, because the Codex app only
+runs a prompt from outside after a person confirms it, and only that app chat has Codex's fast in-app browser
+(a no-click CLI run would be slower and unsandboxed)."
+Before every later call, just say: "Press Enter in the new Codex chat to start it."
+It returns Codex's report and the files it saved. If it reports a problem in your change, fix the code and
+call it again (that needs another Enter)."""
 
 TOOLS = [
     {"name": "codex_computer",
@@ -80,7 +85,7 @@ class AppServer:
         self.deadline, self.timeout = time.time() + timeout, timeout
         threading.Thread(target=lambda: [self.lines.put(l) for l in self.p.stdout] + [self.lines.put(None)],
                          daemon=True).start()
-        self.call("initialize", {"clientInfo": {"name": "codex-relay", "version": "3.0.1"},
+        self.call("initialize", {"clientInfo": {"name": "codex-relay", "version": "3.0.2"},
                                  "capabilities": {"experimentalApi": True}})
         self.send({"method": "initialized"})
 
@@ -204,7 +209,7 @@ def main():
         if m == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"),
                       "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "codex-relay", "version": "3.0.1"},
+                      "serverInfo": {"name": "codex-relay", "version": "3.0.2"},
                       "instructions": INSTRUCTIONS}
         elif m == "tools/list":
             result = {"tools": TOOLS}
