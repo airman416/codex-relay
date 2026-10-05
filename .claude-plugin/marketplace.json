@@ -8,7 +8,7 @@
     {
       "name": "codex-relay",
       "source": "./",
-      "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask."
+      "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask, codex_computer."
     }
   ]
 }

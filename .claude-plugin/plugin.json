@@ -1,7 +1,7 @@
 {
   "name": "codex-relay",
-  "version": "1.0.2",
-  "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask.",
+  "version": "1.1.0",
+  "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask, codex_computer.",
   "author": {
     "name": "Armaan Agrawal"
   },

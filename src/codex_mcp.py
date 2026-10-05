@@ -11,6 +11,8 @@ Tools
   codex_review  Codex reviews the working-tree diff (or the diff against a base ref) and returns a JSON verdict.
   codex_task    Codex does a task on its own git worktree and branch, so it never touches Claude's checkout.
   codex_ask     A read-only second opinion from Codex about the repo.
+  codex_computer  Codex uses its browser / computer use (e.g. screenshots and DOM of a web app) and saves files.
+                  One-time setup: in the Codex desktop app, allow Computer Use to control the apps it needs (e.g. Chrome).
 
 Env: CODEX_BIN (codex), CODEX_MODEL (Codex default), CODEX_STEP_TIMEOUT (1200 s),
      CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees).
@@ -53,7 +55,9 @@ Review loop: after you change code, call codex_review with the repo and what the
 Fix every blocker and major issue, then call codex_review again. Stop when it approves or after 3 rounds,
 and tell the user about any issue you chose not to fix and why.
 Use codex_task to hand off independent work. It runs on its own branch, so read its diff before you merge it.
-Use codex_ask for a second opinion on a design or a bug."""
+Use codex_ask for a second opinion on a design or a bug.
+Use codex_computer for browser or computer-use work (open a site, click through it, take screenshots,
+save the DOM). Prefer model gpt-6-astra for it. It returns the files it saved; use them in your work."""
 
 REPO = {"type": "string", "description": "Absolute path to a directory inside the git repository."}
 MODEL_ARG = {"type": "string", "description": "Optional Codex model for this call, e.g. gpt-6-astra (strongest; use for computer use, browser work and hard reviews), gpt-6.1-sol (default workhorse), gpt-6-luna (fast, cheap). Omit to use the user's Codex default."}
@@ -84,6 +88,17 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["repo", "question"], "properties": {
          "repo": REPO, "question": {"type": "string"}, "model": MODEL_ARG}},
      "annotations": {"readOnlyHint": True}},
+    {"name": "codex_computer",
+     "description": "Hand browser / computer-use work to Codex: open sites or apps, click through them, take "
+                    "screenshots, save page DOM or data. Codex runs sandboxed with network access and can only "
+                    "write into `dir`. Returns Codex's report and the files it saved. Can take several minutes.",
+     "inputSchema": {"type": "object", "required": ["task"], "properties": {
+         "task": {"type": "string", "description": "Complete instructions: which site/app, what to do, what to save "
+                                                   "and how to name files. Codex cannot see this chat."},
+         "dir": {"type": "string", "description": "Absolute folder for the output files. Default: a new folder "
+                                                  "under ~/.codex-relay/computer/."},
+         "model": MODEL_ARG}},
+     "annotations": {"openWorldHint": True}},
 ]
 
 
@@ -176,7 +191,27 @@ def codex_ask(args):
     return codex(["-s", "read-only", text_arg(args, "question")], root, model=model_arg(args)) or "(Codex returned no answer)"
 
 
-HANDLERS = {"codex_review": codex_review, "codex_task": codex_task, "codex_ask": codex_ask}
+def codex_computer(args):
+    task = text_arg(args, "task")
+    out = Path(str(args.get("dir") or HOME / "computer" / (time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:4])))
+    out = out.expanduser()
+    if not out.is_absolute() or out.resolve() in (Path("/"), Path.home().resolve()):
+        raise ValueError(f"dir must be an absolute folder other than / or your home folder: {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    before = {p for p in out.rglob("*") if p.is_file()}
+    report = codex(["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
+                    "--skip-git-repo-check",
+                    f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
+                    "When done, list each file you saved and what it shows."], out, model=model_arg(args))
+    new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
+    files = "\n".join(new) or "(no files saved)"
+    hint = ("" if new else "\n\nIf Codex says Computer Use was not approved for an app, the user must allow Codex "
+            "Computer Use to control that app once, in the Codex desktop app, then try again.")
+    return f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}{hint}"
+
+
+HANDLERS = {"codex_review": codex_review, "codex_task": codex_task, "codex_ask": codex_ask,
+            "codex_computer": codex_computer}
 
 # --- MCP over stdio: newline-delimited JSON-RPC ----------------------------------------------------
 
