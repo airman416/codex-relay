@@ -1,14 +1,15 @@
 """Drives the MCP server over stdio with a fake `codex` binary. Run: python3 tests/test_codex_mcp.py"""
-import json, os, subprocess, sys, tempfile
+import json, os, re, subprocess, sys, tempfile, urllib.parse
 from pathlib import Path
 
 FAKE_CODEX = r'''#!/usr/bin/env python3
-import json, sys
+import json, os, re, sys, urllib.parse
 a = sys.argv[1:]
 opt = lambda k: a[a.index(k) + 1] if k in a else None
 if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
     send = lambda m: print(json.dumps({"jsonrpc": "2.0", **m}), flush=True)
     recv = lambda: json.loads(sys.stdin.readline())
+    reads = 0
     while True:
         m = recv()
         if m.get("method") == "initialize":
@@ -16,13 +17,25 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"id": m["id"], "result": {}})
         elif m.get("method") == "thread/start":
             prm = m["params"]
-            assert prm["sandbox"] in ("workspace-write", "read-only") and prm["ephemeral"] is False
+            assert prm["sandbox"] in ("workspace-write", "read-only") and prm["ephemeral"] is True
             assert prm["approvalPolicy"]["granular"]["mcp_elicitations"] and not prm["approvalPolicy"]["granular"]["sandbox_approval"]
             send({"id": m["id"], "result": {"thread": {"id": "t1"}}})
-        elif m.get("method") == "thread/name/set":
-            assert m["params"]["threadId"] == "t1"
-            name = m["params"]["name"]
-            send({"id": m["id"], "result": {}})
+        elif m.get("method") == "thread/list":  # app mode: the chat exists once the fake opener "pressed Enter"
+            link = os.environ["FAKE_LINK_FILE"]
+            prompt = dict(urllib.parse.parse_qsl(open(link).read().split("?", 1)[1]))["prompt"] if os.path.exists(link) else ""
+            ok = prompt and m["params"]["searchTerm"] in prompt
+            send({"id": m["id"], "result": {"data": [{"id": "app1", "preview": prompt, "cwd": os.environ["FAKE_APP_DIR"]}] if ok else []}})
+        elif m.get("method") == "thread/read":
+            assert m["params"]["threadId"] == "app1"
+            reads += 1
+            prompt = dict(urllib.parse.parse_qsl(open(os.environ["FAKE_LINK_FILE"]).read().split("?", 1)[1]))["prompt"]
+            out = re.search(r"Save every file you produce in (\S+)\. ", prompt).group(1)
+            if reads == 1:  # still running in the app: read from disk it looks interrupted, with no completedAt
+                turn = {"status": "interrupted", "completedAt": None, "items": []}
+            else:
+                open(out + "/page.png", "w").write("png")
+                turn = {"status": "completed", "completedAt": 2, "items": [{"type": "agentMessage", "text": "done in the Codex app"}]}
+            send({"id": m["id"], "result": {"thread": {"id": "app1", "cwd": os.environ["FAKE_APP_DIR"], "turns": [turn]}}})
         elif m.get("method") == "turn/start" and m["params"].get("outputSchema"):  # codex_review
             send({"id": m["id"], "result": {}})
             text = m["params"]["input"][0]["text"]
@@ -45,7 +58,7 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"id": 902, "method": "item/commandExecution/requestApproval", "params": {}})
             r3 = recv()
             open("shot.png", "w").write("png")
-            msg = f"cua:{r1['result']['action']} other:{r2['result']['action']} cmd-refused:{'error' in r3} name:{name}"
+            msg = f"cua:{r1['result']['action']} other:{r2['result']['action']} cmd-refused:{'error' in r3}"
             send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": msg}}})
             send({"method": "turn/completed", "params": {"turn": {"id": "u1"}}})
             sys.exit(0)
@@ -70,7 +83,14 @@ git("config", "user.name", "t")
 git("add", "-A")
 git("commit", "-qm", "init")
 
-env = {**os.environ, "CODEX_BIN": str(fake), "CODEX_RELAY_HOME": str(tmp / "home"), "CODEX_RELAY_OPEN_THREADS": "0"}
+opener = tmp / "open"  # stands in for macOS `open` + the user pressing Enter in the Codex app
+opener.write_text('#!/bin/sh\ncase "$1" in *NOSTART*) exit 0;; esac\nprintf %s "$1" > "$FAKE_LINK_FILE"\n')
+opener.chmod(0o755)
+app_dir = tmp / "appchat"
+app_dir.mkdir()
+env = {**os.environ, "CODEX_BIN": str(fake), "CODEX_RELAY_HOME": str(tmp / "home"), "HOME": str(tmp / "userhome"),
+       "CODEX_RELAY_OPEN_BIN": str(opener), "CODEX_RELAY_START_WAIT": "3",
+       "FAKE_LINK_FILE": str(tmp / "link.txt"), "FAKE_APP_DIR": str(app_dir), "CODEX_RELAY_APP_DIR": str(app_dir)}
 srv = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent.parent / "src" / "codex_mcp.py")],
                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
 n = 0
@@ -104,7 +124,6 @@ err, text = tool("codex_review", repo=str(repo), task="t")
 assert not err and "APPROVED" in text and "checked it in the browser" not in text, text
 err, text = tool("codex_review", repo=str(repo), task="t", url="http://localhost:9/page")
 assert not err and "APPROVED" in text and "(Codex checked it in the browser: 1 Computer Use actions)" in text, text
-assert "Codex thread: codex://threads/t1" in text, text
 assert tool("codex_review", repo=str(repo), task="t", url="file:///etc/passwd")[0]
 
 err, text = tool("codex_task", repo=str(repo), task="add a file")
@@ -121,10 +140,21 @@ out = tmp / "captures"
 err, text = tool("codex_computer", task="screenshot example.com", dir=str(out))
 assert not err and "cua:accept other:decline cmd-refused:True" in text, text
 assert str(out / "shot.png") in text and "(1 Computer Use actions approved)" in text, text
-assert "name:codex-relay: screenshot example.com" in text and "codex://threads/t1" in text, text
-err, text = tool("codex_computer", task="x")  # default folder under CODEX_RELAY_HOME
-assert not err and str(tmp / "home" / "computer") in text, text
+err, text = tool("codex_computer", task="Open Timeback, screenshot it!")  # default: a Codex projectless-chat folder
+assert not err and str(tmp / "userhome" / "Documents" / "Codex") in text and "/open-timeback-screenshot-it" in text, text
 assert tool("codex_computer", task="x", dir="/")[0] and tool("codex_computer", task="x", dir="rel")[0]
+
+err, text = tool("codex_computer", task="screenshot the leaderboard", mode="app", url="https://example.com")
+link = (tmp / "link.txt").read_text()
+assert link.startswith("codex://new?") and "browserUrl=https%3A%2F%2Fexample.com" in link, link
+assert dict(urllib.parse.parse_qsl(link.split("?", 1)[1]))["path"] == str(app_dir), link
+assert not err and "done in the Codex app" in text and "Codex interrupted" not in text, text
+assert re.search(re.escape(str(app_dir)) + r"/\d{4}-\d\d-\d\d/screenshot-the-leaderboard/page\.png", text), text
+assert "Codex chat: codex://threads/app1" in text, text
+(tmp / "link.txt").unlink()
+err, text = tool("codex_computer", task="NOSTART please", mode="app")  # nobody presses Enter
+assert err and "Nobody started the Codex app chat" in text, text
+assert tool("codex_computer", task="x", mode="cloud")[0] and tool("codex_computer", task="x", url="ftp://x")[0]
 
 for bad in ({"repo": "relative", "task": "t"}, {"repo": str(repo), "task": " "},
             {"repo": str(repo), "task": "t", "base": "--output=/tmp/x"}):

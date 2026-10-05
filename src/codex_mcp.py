@@ -16,9 +16,10 @@ Tools
                   Runs through `codex app-server`, so Codex's Computer Use approvals come back to this server.
 
 Env: CODEX_BIN (codex), CODEX_MODEL (Codex default), CODEX_STEP_TIMEOUT (1200 s),
-     CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees), CODEX_RELAY_OPEN_THREADS (1: open runs in the Codex app).
+     CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees), CODEX_RELAY_START_WAIT (300 s to press Enter in app mode),
+     CODEX_RELAY_APP_DIR (~/Documents/Codex/codex-relay: the Codex app project that app-mode chats run in).
 """
-import json, os, queue, subprocess, sys, tempfile, threading, time, uuid
+import json, os, queue, re, subprocess, sys, tempfile, threading, time, urllib.parse, uuid
 from pathlib import Path
 
 CODEX = os.environ.get("CODEX_BIN", "codex")
@@ -26,8 +27,6 @@ MODEL = os.environ.get("CODEX_MODEL")
 TIMEOUT = int(os.environ.get("CODEX_STEP_TIMEOUT", "1200"))
 HOME = Path(os.environ.get("CODEX_RELAY_HOME", Path.home() / ".codex-relay"))
 MAX_DIFF = 200_000  # chars sent to Codex
-# Review and computer-use runs are saved as named Codex threads; open each one in the Codex app as it starts.
-OPEN_THREADS = os.environ.get("CODEX_RELAY_OPEN_THREADS", "1") != "0"
 
 VERDICT = {
     "type": "object", "additionalProperties": False,
@@ -72,7 +71,8 @@ and tell the user about any issue you chose not to fix and why.
 Use codex_task to hand off independent work. It runs on its own branch, so read its diff before you merge it.
 Use codex_ask for a second opinion on a design or a bug.
 Use codex_computer for browser or computer-use work (open a site, click through it, take screenshots,
-save the DOM). Prefer model gpt-6-astra for it. It returns the files it saved; use them in your work."""
+save the DOM). Prefer model gpt-6-astra for it. It returns the files it saved; use them in your work.
+With mode "app" it runs as a visible Codex app chat: tell the user to press Enter in the new Codex chat."""
 
 REPO = {"type": "string", "description": "Absolute path to a directory inside the git repository."}
 MODEL_ARG = {"type": "string", "description": "Optional Codex model for this call, e.g. gpt-6-astra (strongest; use for computer use, browser work and hard reviews), gpt-6.1-sol (default workhorse), gpt-6-luna (fast, cheap). Omit to use the user's Codex default."}
@@ -116,7 +116,13 @@ TOOLS = [
          "task": {"type": "string", "description": "Complete instructions: which site/app, what to do, what to save "
                                                    "and how to name files. Codex cannot see this chat."},
          "dir": {"type": "string", "description": "Absolute folder for the output files. Default: a new folder "
-                                                  "under ~/.codex-relay/computer/."},
+                                                  "under ~/Documents/Codex/<date>/ (app mode: under ~/Documents/Codex/codex-relay/)."},
+         "url": {"type": "string", "description": "Optional http(s) URL to start at."},
+         "mode": {"type": "string", "enum": ["headless", "app"], "default": "headless",
+                  "description": "headless: no clicks needed; Codex drives Chrome with Computer Use. app: opens a new "
+                                 "chat in the Codex app with the task typed in and the in-app browser at `url`; the "
+                                 "user presses Enter once, can watch it live, and Codex gets full in-app browser "
+                                 "control. Use app when the user wants to watch or wants the in-app browser."},
          "model": MODEL_ARG}},
      "annotations": {"openWorldHint": True}},
 ]
@@ -174,13 +180,10 @@ def codex_review(args):
         return f"No changes to review against {base}."
     if len(diff) > MAX_DIFF:
         diff = diff[:MAX_DIFF] + "\n[diff truncated; read the files for the rest]\n"
-    url = str(args.get("url") or "").strip()
-    if url and not url.startswith(("http://", "https://")):
-        raise ValueError("url must start with http:// or https://")
+    url = url_arg(args)
     visual = VISUAL_URL.format(url=url) if url else VISUAL_AUTO
     prompt = REVIEW_PROMPT.format(task=task, visual=visual, diff=diff)
-    report, looked, tid = app_server_turn(prompt, root, model_arg(args), sandbox="read-only",
-                                          output_schema=VERDICT, name=f"codex-relay review: {task}")
+    report, looked = app_server_turn(prompt, root, model_arg(args), sandbox="read-only", output_schema=VERDICT)
     try:
         v = json.loads(report)
     except json.JSONDecodeError:
@@ -189,7 +192,7 @@ def codex_review(args):
     issues = "\n".join(f"- [{i['severity']}] {i['file']}:{i['line']} {i['comment']}" for i in v["issues"])
     nxt = "" if v["approved"] else "\n\nFix the blocker/major issues, then call codex_review again."
     seen = f"\n(Codex checked it in the browser: {looked} Computer Use actions)" if looked else ""
-    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}{seen}\nCodex thread: codex://threads/{tid}\n\n{json.dumps(v)}"
+    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}{seen}\n\n{json.dumps(v)}"
 
 
 def codex_task(args):
@@ -218,22 +221,91 @@ def codex_ask(args):
     return codex(["-s", "read-only", text_arg(args, "question")], root, model=model_arg(args)) or "(Codex returned no answer)"
 
 
+def projectless_dir(task):
+    """Same place and naming as a Codex app "projectless chat", so the run shows up in the Codex sidebar."""
+    words = re.findall(r"[a-z0-9]+", task.lower())[:6]
+    return Path.home() / "Documents" / "Codex" / time.strftime("%Y-%m-%d") / ("-".join(words)[:80] or "new-chat")
+
+
 def codex_computer(args):
-    task = text_arg(args, "task")
-    out = Path(str(args.get("dir") or HOME / "computer" / (time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:4])))
-    out = out.expanduser()
+    task, url, mode = text_arg(args, "task"), url_arg(args), str(args.get("mode") or "headless")
+    if mode not in ("headless", "app"):
+        raise ValueError('mode must be "headless" or "app"')
+    out = Path(str(args.get("dir") or projectless_dir(task))).expanduser()
     if not out.is_absolute() or out.resolve() in (Path("/"), Path.home().resolve()):
         raise ValueError(f"dir must be an absolute folder other than / or your home folder: {out}")
+    if mode == "app":
+        return app_chat(task, url, Path(str(args["dir"])).expanduser() if args.get("dir") else None)
     out.mkdir(parents=True, exist_ok=True)
     before = {p for p in out.rglob("*") if p.is_file()}
-    prompt = (f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
+    prompt = (f"{task}\n\n" + (f"Start at {url}. " if url else "") +
+              f"Use your browser or computer-use tools. Save every file you produce in {out}. "
               "Give each file the extension that matches its real format. When done, close any tabs or windows "
               "you opened, then list each file you saved and what it shows.")
-    report, approved, tid = app_server_turn(prompt, out, model_arg(args), name=f"codex-relay: {task}")
+    report, approved = app_server_turn(prompt, out, model_arg(args))
     new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
     files = "\n".join(new) or "(no files saved)"
-    return (f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}\n({approved} Computer Use actions approved)\n"
-            f"Codex thread (every step Codex took): codex://threads/{tid}")
+    return f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}\n({approved} Computer Use actions approved)"
+
+
+def url_arg(args):
+    url = str(args.get("url") or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise ValueError("url must start with http:// or https://")
+    return url
+
+
+class AppServer:
+    """Minimal client for `codex app-server` (newline-delimited JSON-RPC over stdio)."""
+
+    def __init__(self, cwd, timeout, on_request=None, on_message=None):
+        self.p = subprocess.Popen([CODEX, "app-server"], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True)
+        self.lines, self.ids = queue.Queue(), iter(range(1, 10**6))
+        self.deadline, self.timeout = time.time() + timeout, timeout
+        self.on_request = on_request or (lambda m: {"error": {"code": -32000, "message": "not allowed by codex-relay"}})
+        self.on_message = on_message or (lambda m: None)
+        threading.Thread(target=lambda: [self.lines.put(l) for l in self.p.stdout] + [self.lines.put(None)],
+                         daemon=True).start()
+        self.call("initialize", {"clientInfo": {"name": "codex-relay", "version": "1.5.0"},
+                                 "capabilities": {"experimentalApi": True}})
+        self.send({"method": "initialized"})
+
+    def send(self, msg):
+        self.p.stdin.write(json.dumps({"jsonrpc": "2.0", **msg}) + "\n")
+        self.p.stdin.flush()
+
+    def pump(self, until):
+        """Read messages, answering Codex's requests, until `until(msg)` returns a value."""
+        while True:
+            try:
+                line = self.lines.get(timeout=max(1, self.deadline - time.time()))
+            except queue.Empty:
+                raise subprocess.TimeoutExpired("codex app-server", self.timeout)
+            if line is None:
+                raise RuntimeError("codex app-server exited early")
+            try:
+                m = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "method" in m and "id" in m:  # a request from Codex to us
+                self.send({"id": m["id"], **self.on_request(m)})
+                continue
+            self.on_message(m)
+            got = until(m)
+            if got is not None:
+                return got
+
+    def call(self, method, params):
+        i = next(self.ids)
+        self.send({"id": i, "method": method, "params": params})
+        r = self.pump(lambda m: m if m.get("id") == i and "method" not in m else None)
+        if "error" in r:
+            raise RuntimeError(f"codex app-server {method}: {r['error'].get('message')}")
+        return r["result"]
+
+    def close(self):
+        self.p.kill()
 
 
 # Computer Use only asks for approval through a client, so `codex exec` (approval: never) always gets "not
@@ -244,78 +316,92 @@ APPROVALS = {"granular": {"mcp_elicitations": True, "rules": False, "sandbox_app
                           "request_permissions": False, "skill_approval": False}}
 
 
-def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema=None, name="codex-relay"):
-    p = subprocess.Popen([CODEX, "app-server"], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL, text=True)
-    lines = queue.Queue()
-    threading.Thread(target=lambda: [lines.put(l) for l in p.stdout] + [lines.put(None)], daemon=True).start()
-    deadline, ids, texts, approved = time.time() + TIMEOUT, iter(range(1, 10**6)), [], 0
+def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema=None):
+    """Headless run: one temporary Codex thread; returns (final message, Computer Use actions approved)."""
+    texts, approved = [], [0]
 
-    def send(msg):
-        p.stdin.write(json.dumps({"jsonrpc": "2.0", **msg}) + "\n")
-        p.stdin.flush()
+    def on_request(m):
+        if m["method"] != "mcpServer/elicitation/request":
+            return {"error": {"code": -32000, "message": "not allowed by codex-relay"}}
+        ok = (m.get("params") or {}).get("serverName") in COMPUTER_SERVERS
+        approved[0] += ok
+        return {"result": {"action": "accept" if ok else "decline", "content": {}}}
 
-    def pump(until):
-        """Read messages, answering server requests, until `until(msg)` returns a value."""
-        nonlocal approved
-        while True:
-            try:
-                line = lines.get(timeout=max(1, deadline - time.time()))
-            except queue.Empty:
-                raise subprocess.TimeoutExpired("codex app-server", TIMEOUT)
-            if line is None:
-                raise RuntimeError("codex app-server exited early")
-            try:
-                m = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "method" in m and "id" in m:  # request from Codex to us
-                prm = m.get("params") or {}
-                if m["method"] == "mcpServer/elicitation/request":
-                    ok = prm.get("serverName") in COMPUTER_SERVERS
-                    approved += ok
-                    send({"id": m["id"], "result": {"action": "accept" if ok else "decline", "content": {}}})
-                else:
-                    send({"id": m["id"], "error": {"code": -32000, "message": "not allowed by codex-relay"}})
-                continue
-            if m.get("method") == "item/completed" and (m["params"].get("item") or {}).get("type") == "agentMessage":
-                texts.append(m["params"]["item"].get("text", ""))
-            got = until(m)
-            if got is not None:
-                return got
+    def on_message(m):
+        item = (m.get("params") or {}).get("item") or {}
+        if m.get("method") == "item/completed" and item.get("type") == "agentMessage":
+            texts.append(item.get("text", ""))
 
-    def call(method, params):
-        i = next(ids)
-        send({"id": i, "method": method, "params": params})
-        r = pump(lambda m: m if m.get("id") == i and "method" not in m else None)
-        if "error" in r:
-            raise RuntimeError(f"codex app-server {method}: {r['error'].get('message')}")
-        return r["result"]
-
+    srv = AppServer(cwd, TIMEOUT, on_request, on_message)
     try:
-        call("initialize", {"clientInfo": {"name": "codex-relay", "version": "1.2.0"},
-                            "capabilities": {"experimentalApi": True}})
-        send({"method": "initialized"})
-        thread = call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": sandbox,
-                                       "approvalPolicy": APPROVALS, "ephemeral": False,
-                                       "config": {"sandbox_workspace_write": {"network_access": True}}})
+        thread = srv.call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": sandbox,
+                                           "approvalPolicy": APPROVALS, "ephemeral": True,
+                                           "config": {"sandbox_workspace_write": {"network_access": True}}})
         tid = (thread.get("thread") or {}).get("id") or thread.get("threadId")
-        call("thread/name/set", {"threadId": tid, "name": " ".join(name.split())[:80]})
         turn_params = {"threadId": tid, "input": [{"type": "text", "text": prompt}]}
         if output_schema:
             turn_params["outputSchema"] = output_schema
-        call("turn/start", turn_params)
-        if OPEN_THREADS:  # show the run in the Codex app (macOS `open`; harmless if it fails)
-            try:
-                subprocess.run(["open", f"codex://threads/{tid}"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
-            except (OSError, subprocess.SubprocessError):
-                pass
-        turn = pump(lambda m: m["params"] if m.get("method") == "turn/completed" else None)
+        srv.call("turn/start", turn_params)
+        turn = srv.pump(lambda m: m["params"] if m.get("method") == "turn/completed" else None)
         err = (turn.get("turn") or {}).get("error")
         report = texts[-1] if texts else "(Codex returned no message)"
-        return (f"{report}\n\nCodex error: {err}" if err else report), approved, tid
+        return (f"{report}\n\nCodex error: {err}" if err else report), approved[0]
     finally:
-        p.kill()
+        srv.close()
+
+
+# App mode: the Codex app itself runs the chat, so Codex gets its in-app browser and the user can watch.
+# The app only pre-fills prompts that come from a link, so the user presses Enter once to start it.
+START_WAIT = int(os.environ.get("CODEX_RELAY_START_WAIT", "300"))
+# One workspace for all app-mode chats: the Codex app shows them together under a "codex-relay" project.
+APP_ROOT = Path(os.environ.get("CODEX_RELAY_APP_DIR", Path.home() / "Documents" / "Codex" / "codex-relay"))
+OPEN_BIN = os.environ.get("CODEX_RELAY_OPEN_BIN", "open")
+
+
+def app_chat(task, url, out):
+    tag = f"[codex-relay {uuid.uuid4().hex[:8]}]"
+    out = out or APP_ROOT / time.strftime("%Y-%m-%d") / projectless_dir(task).name
+    out.mkdir(parents=True, exist_ok=True)
+    before = {p for p in out.rglob("*") if p.is_file()}
+    prompt = (f"{tag} {task}\n\n" + (f"Start at {url} in the in-app browser. " if url else "") +
+              f"Use the Codex in-app browser (or Computer Use if needed). Save every file you produce in {out}. "
+              "Give each file the extension that matches its real format. When done, list each file you saved "
+              "and what it shows.")
+    query = {"prompt": prompt, "path": str(APP_ROOT), **({"browserUrl": url} if url else {})}
+    link = "codex://new?" + urllib.parse.urlencode(query)
+    started = time.time()
+    r = subprocess.run([OPEN_BIN, link], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        raise RuntimeError(f"could not open the Codex app: {(r.stderr or r.stdout).strip()}")
+    srv = AppServer(Path.home(), START_WAIT + TIMEOUT)
+    try:
+        thread = None
+        while thread is None:  # wait for the user to press Enter, which creates the thread
+            rows = srv.call("thread/list", {"limit": 20, "archived": False, "searchTerm": tag,
+                                            "useStateDbOnly": True}).get("data") or []
+            thread = next((t for t in rows if tag in (t.get("preview") or "")), None)
+            if thread is None:
+                if time.time() - started > START_WAIT:
+                    raise RuntimeError(f"Nobody started the Codex app chat within {START_WAIT}s. The task is typed "
+                                       "into a new Codex chat; ask the user to press Enter there, then call again.")
+                time.sleep(2)
+        while True:  # wait for the Codex app to finish the turn
+            th = srv.call("thread/read", {"threadId": thread["id"], "includeTurns": True})["thread"]
+            last = (th.get("turns") or [{}])[-1]
+            # Read from disk, a turn the app is still running looks "interrupted"; it is done once it has completedAt.
+            if last.get("completedAt") and last.get("status") != "inProgress":
+                break
+            if time.time() - started > START_WAIT + TIMEOUT:
+                raise subprocess.TimeoutExpired("Codex app chat", TIMEOUT)
+            time.sleep(3)
+    finally:
+        srv.close()
+    texts = [i.get("text", "") for i in last.get("items") or [] if i.get("type") == "agentMessage"]
+    report = texts[-1] if texts else "(Codex returned no message)"
+    new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
+    err = f"\nCodex {last['status']}: {last.get('error')}" if last["status"] != "completed" else ""
+    return (f"Codex report (Codex app chat):\n{report}{err}\n\nFolder: {out}\nNew files:\n"
+            + ("\n".join(new) or "(no files saved)") + f"\nCodex chat: codex://threads/{thread['id']}")
 
 
 HANDLERS = {"codex_review": codex_review, "codex_task": codex_task, "codex_ask": codex_ask,

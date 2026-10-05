@@ -46,6 +46,8 @@ Ask Claude as you normally do:
 
 > Have Codex open Timeback in Chrome, screenshot the leaderboard and save its DOM, then use them in the video.
 
+> In the Codex app, have Codex screenshot the Timeback leaderboard so I can watch.
+
 | Tool | What it does |
 |---|---|
 | `codex_review` | Codex reviews your uncommitted changes (or everything since `base`, e.g. `main`) and returns a verdict: approved, plus issues with severity, file, and line. For visible changes it also opens the running app in Chrome and checks it (give Claude the URL, e.g. `localhost:3000`). |
@@ -55,11 +57,9 @@ Ask Claude as you normally do:
 
 Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. `codex_computer` needs the Codex desktop app with Computer Use set up (it uses Codex's own browser and Computer Use runtime). No other setup: Computer Use actions are approved only for the duration of each `codex_computer` call, approvals from any other tool are declined, and shell commands stay in Codex's sandbox.
 
-**Watch Codex work:** every `codex_review` and `codex_computer` run is saved as a named Codex thread ("codex-relay: …") and opens in the Codex app as it starts, so you can see each step Codex takes. Claude also gets the `codex://threads/<id>` link. Set `CODEX_RELAY_OPEN_THREADS=0` to stop the auto-open.
+**Watch Codex work (app mode):** ask Claude to run `codex_computer` "in the Codex app". Claude opens a new Codex app chat with the task typed in (and the in-app browser at the page). Press Enter once. Codex then runs it with its in-app browser while you watch, and Claude gets the report and files back when it finishes. These chats live under a "codex-relay" project in the Codex app (`~/Documents/Codex/codex-relay`). The Codex app only pre-fills prompts that come from a link, so the one Enter is required. The default (headless) mode needs no clicks, but Codex then drives Chrome with Computer Use and the run is not shown in the Codex app.
 
-Note: Codex's in-app browser only works for threads the Codex app runs itself, so codex-relay uses Chrome (you can watch it on screen).
-
-Settings (env vars): `CODEX_MODEL`, `CODEX_RELAY_OPEN_THREADS`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
+Settings (env vars): `CODEX_MODEL`, `CODEX_RELAY_START_WAIT` (default 300 s), `CODEX_RELAY_APP_DIR`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
 
 ## Test
 
