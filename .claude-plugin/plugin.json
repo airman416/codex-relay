@@ -1,7 +1,7 @@
 {
   "name": "codex-relay",
-  "version": "1.5.0",
-  "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask, codex_computer.",
+  "version": "2.0.0",
+  "description": "Lets Claude hand computer-use work (testing the running app, screenshots, page DOM) to Codex on Astra and get the result back.",
   "author": {
     "name": "Armaan Agrawal"
   },

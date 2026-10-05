@@ -3,12 +3,12 @@
   "owner": {
     "name": "Armaan Agrawal"
   },
-  "description": "Codex as a tool for Claude: review loops and task handoff.",
+  "description": "Codex computer use as a tool for Claude.",
   "plugins": [
     {
       "name": "codex-relay",
       "source": "./",
-      "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask, codex_computer."
+      "description": "Lets Claude hand computer-use work (testing the running app, screenshots, page DOM) to Codex on Astra and get the result back."
     }
   ]
 }

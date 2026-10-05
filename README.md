@@ -1,6 +1,6 @@
 # codex-relay
 
-Codex as a tool for Claude. Claude writes the code, Codex reviews it, and Claude fixes the issues until Codex approves. You never leave the Claude app.
+Claude writes the code. Codex (on Astra) does the computer use: it clicks through the running app to test a change, takes screenshots, and saves page DOM, then hands the result back to Claude. No copying PRs between agents, and you never leave the Claude app.
 
 ## Install (let Claude do it)
 
@@ -16,12 +16,12 @@ Install the codex-relay plugin for me. Do these steps in order and stop to tell 
 4. Run `claude plugin marketplace add airman416/codex-relay`
    then `claude plugin install codex-relay@codex-relay`.
 5. Run `claude mcp list` and confirm the codex-relay server shows "Connected".
-6. Tell me to start a new session, and give me one example prompt to try the Codex review loop.
+6. Tell me to start a new session, and give me one example prompt to try codex_computer.
 ```
 
 ## Install (by hand)
 
-You need the [Codex CLI](https://github.com/openai/codex), signed in (`codex login`), and `python3`.
+You need the [Codex CLI](https://github.com/openai/codex) signed in (`codex login`), the Codex desktop app with Computer Use set up, and `python3`.
 
 In Claude (desktop app Code tab, or `claude` in a terminal):
 
@@ -30,36 +30,30 @@ In Claude (desktop app Code tab, or `claude` in a terminal):
 /plugin install codex-relay@codex-relay
 ```
 
-Restart the session. That is all.
+Restart the session.
 
 ## Use
 
 Ask Claude as you normally do:
 
-> Add rate limiting to /login, then loop with Codex review until it approves.
+> Add a Sign up button to the home page, then have Codex test it at localhost:3000 and fix anything it finds.
 
-> Add a Sign up button to the home page (running at localhost:3000), then loop with Codex review until it approves.
-
-> Have Codex write the migration for the new `orders` table while you do the API.
-
-> Ask Codex whether this caching approach has a race condition.
-
-> Have Codex open Timeback in Chrome, screenshot the leaderboard and save its DOM, then use them in the video.
+> Have Codex go through Timeback in Chrome, screenshot the leaderboard and save its DOM, then use them in the video.
 
 > In the Codex app, have Codex screenshot the Timeback leaderboard so I can watch.
 
-| Tool | What it does |
-|---|---|
-| `codex_review` | Codex reviews your uncommitted changes (or everything since `base`, e.g. `main`) and returns a verdict: approved, plus issues with severity, file, and line. For visible changes it also opens the running app in Chrome and checks it (give Claude the URL, e.g. `localhost:3000`). |
-| `codex_task` | Codex does a task on its own git worktree and `codex/<id>` branch, so your checkout is never touched. Claude gets the report and can review or merge it. |
-| `codex_ask` | A read-only second opinion from Codex. |
-| `codex_computer` | Codex uses its browser and computer use (open a site, click through it, take screenshots, save the DOM) and returns the files it saved. Runs sandboxed with network access; it can only write to its output folder. |
+The plugin gives Claude one tool, `codex_computer`. Codex runs on `gpt-6-astra` unless Claude asks for another model, and returns its report plus the files it saved.
 
-Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. `codex_computer` needs the Codex desktop app with Computer Use set up (it uses Codex's own browser and Computer Use runtime). No other setup: Computer Use actions are approved only for the duration of each `codex_computer` call, approvals from any other tool are declined, and shell commands stay in Codex's sandbox.
+| Mode | Clicks from you | Browser | Watch it |
+|---|---|---|---|
+| headless (default) | none | Chrome, through desktop Computer Use | Chrome on your screen |
+| app (`"in the Codex app"`) | one Enter per task | Codex in-app browser, with full page control | live, in a Codex app chat under the "codex-relay" project |
 
-**Watch Codex work (app mode):** ask Claude to run `codex_computer` "in the Codex app". Claude opens a new Codex app chat with the task typed in (and the in-app browser at the page). Press Enter once. Codex then runs it with its in-app browser while you watch, and Claude gets the report and files back when it finishes. These chats live under a "codex-relay" project in the Codex app (`~/Documents/Codex/codex-relay`). The Codex app only pre-fills prompts that come from a link, so the one Enter is required. The default (headless) mode needs no clicks, but Codex then drives Chrome with Computer Use and the run is not shown in the Codex app.
+App mode needs the one Enter because the Codex app only pre-fills prompts that come from a link.
 
-Settings (env vars): `CODEX_MODEL`, `CODEX_RELAY_START_WAIT` (default 300 s), `CODEX_RELAY_APP_DIR`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
+Safety: in headless mode Codex runs sandboxed with network access and can only write to its output folder. Its Computer Use actions are approved for that one call only, and approval requests from any other tool are declined.
+
+Settings (env vars): `CODEX_MODEL` (default `gpt-6-astra`), `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_START_WAIT` (default 300 s to press Enter in app mode), `CODEX_RELAY_APP_DIR` (default `~/Documents/Codex/codex-relay`).
 
 ## Test
 
