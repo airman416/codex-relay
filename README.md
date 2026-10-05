@@ -51,7 +51,7 @@ Ask Claude as you normally do:
 | `codex_ask` | A read-only second opinion from Codex. |
 | `codex_computer` | Codex uses its browser and computer use (open a site, click through it, take screenshots, save the DOM) and returns the files it saved. Runs sandboxed with network access; it can only write to its output folder. |
 
-Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. **One-time setup for `codex_computer`:** Codex asks before Computer Use controls an app (e.g. Chrome), and it cannot ask from inside Claude. Allow each app once in the Codex desktop app; after that it works from Claude.
+Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. `codex_computer` needs the Codex desktop app with Computer Use set up (it uses Codex's own browser and Computer Use runtime). No other setup: Computer Use actions are approved only for the duration of each `codex_computer` call, approvals from any other tool are declined, and shell commands stay in Codex's sandbox.
 
 Settings (env vars): `CODEX_MODEL`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
 

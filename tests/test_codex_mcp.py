@@ -6,6 +6,32 @@ FAKE_CODEX = r'''#!/usr/bin/env python3
 import json, sys
 a = sys.argv[1:]
 opt = lambda k: a[a.index(k) + 1] if k in a else None
+if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
+    send = lambda m: print(json.dumps({"jsonrpc": "2.0", **m}), flush=True)
+    recv = lambda: json.loads(sys.stdin.readline())
+    while True:
+        m = recv()
+        if m.get("method") == "initialize":
+            assert m["params"]["capabilities"]["experimentalApi"]
+            send({"id": m["id"], "result": {}})
+        elif m.get("method") == "thread/start":
+            prm = m["params"]
+            assert prm["sandbox"] == "workspace-write" and prm["ephemeral"]
+            assert prm["approvalPolicy"]["granular"]["mcp_elicitations"] and not prm["approvalPolicy"]["granular"]["sandbox_approval"]
+            send({"id": m["id"], "result": {"thread": {"id": "t1"}}})
+        elif m.get("method") == "turn/start":
+            send({"id": m["id"], "result": {}})
+            send({"id": 900, "method": "mcpServer/elicitation/request", "params": {"serverName": "cua_repl"}})
+            r1 = recv()
+            send({"id": 901, "method": "mcpServer/elicitation/request", "params": {"serverName": "other"}})
+            r2 = recv()
+            send({"id": 902, "method": "item/commandExecution/requestApproval", "params": {}})
+            r3 = recv()
+            open("shot.png", "w").write("png")
+            msg = f"cua:{r1['result']['action']} other:{r2['result']['action']} cmd-refused:{'error' in r3}"
+            send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": msg}}})
+            send({"method": "turn/completed", "params": {"turn": {"id": "u1"}}})
+            sys.exit(0)
 stdin = "" if sys.stdin.isatty() else sys.stdin.read()
 if opt("--output-schema"):
     ok = "+fixed" in stdin
@@ -14,8 +40,7 @@ if opt("--output-schema"):
     open(opt("-o"), "w").write(json.dumps(v))
 elif opt("-s") == "workspace-write":
     open(opt("-C") + "/from_codex.txt", "w").write("hi\n")
-    net = " net" if "sandbox_workspace_write.network_access=true" in a else ""
-    open(opt("-o"), "w").write("wrote from_codex.txt" + net)
+    open(opt("-o"), "w").write("wrote from_codex.txt")
 else:
     open(opt("-o"), "w").write("answer: " + a[-1] + (" via " + opt("-m") if opt("-m") else ""))
 '''
@@ -79,7 +104,8 @@ assert tool("codex_ask", repo=str(repo), question="why?", model="--yolo")[0]
 
 out = tmp / "captures"
 err, text = tool("codex_computer", task="screenshot example.com", dir=str(out))
-assert not err and "wrote from_codex.txt net" in text and str(out / "from_codex.txt") in text, text
+assert not err and "cua:accept other:decline cmd-refused:True" in text, text
+assert str(out / "shot.png") in text and "(1 Computer Use actions approved)" in text, text
 err, text = tool("codex_computer", task="x")  # default folder under CODEX_RELAY_HOME
 assert not err and str(tmp / "home" / "computer") in text, text
 assert tool("codex_computer", task="x", dir="/")[0] and tool("codex_computer", task="x", dir="rel")[0]

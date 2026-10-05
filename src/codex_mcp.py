@@ -12,12 +12,12 @@ Tools
   codex_task    Codex does a task on its own git worktree and branch, so it never touches Claude's checkout.
   codex_ask     A read-only second opinion from Codex about the repo.
   codex_computer  Codex uses its browser / computer use (e.g. screenshots and DOM of a web app) and saves files.
-                  One-time setup: in the Codex desktop app, allow Computer Use to control the apps it needs (e.g. Chrome).
+                  Runs through `codex app-server`, so Codex's Computer Use approvals come back to this server.
 
 Env: CODEX_BIN (codex), CODEX_MODEL (Codex default), CODEX_STEP_TIMEOUT (1200 s),
      CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees).
 """
-import json, os, subprocess, sys, tempfile, threading, time, uuid
+import json, os, queue, subprocess, sys, tempfile, threading, time, uuid
 from pathlib import Path
 
 CODEX = os.environ.get("CODEX_BIN", "codex")
@@ -89,9 +89,10 @@ TOOLS = [
          "repo": REPO, "question": {"type": "string"}, "model": MODEL_ARG}},
      "annotations": {"readOnlyHint": True}},
     {"name": "codex_computer",
-     "description": "Hand browser / computer-use work to Codex: open sites or apps, click through them, take "
-                    "screenshots, save page DOM or data. Codex runs sandboxed with network access and can only "
-                    "write into `dir`. Returns Codex's report and the files it saved. Can take several minutes.",
+     "description": "Hand browser / computer-use work to Codex: open sites or apps (e.g. Chrome), click through "
+                    "them, take screenshots, save page DOM or data. Codex runs sandboxed with network access and "
+                    "can only write into `dir`; its Computer Use actions are approved for this call only. Returns "
+                    "Codex's report and the files it saved. Can take several minutes.",
      "inputSchema": {"type": "object", "required": ["task"], "properties": {
          "task": {"type": "string", "description": "Complete instructions: which site/app, what to do, what to save "
                                                    "and how to name files. Codex cannot see this chat."},
@@ -199,15 +200,85 @@ def codex_computer(args):
         raise ValueError(f"dir must be an absolute folder other than / or your home folder: {out}")
     out.mkdir(parents=True, exist_ok=True)
     before = {p for p in out.rglob("*") if p.is_file()}
-    report = codex(["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
-                    "--skip-git-repo-check",
-                    f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
-                    "When done, list each file you saved and what it shows."], out, model=model_arg(args))
+    prompt = (f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
+              "When done, list each file you saved and what it shows.")
+    report, approved = app_server_turn(prompt, out, model_arg(args))
     new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
     files = "\n".join(new) or "(no files saved)"
-    hint = ("" if new else "\n\nIf Codex says Computer Use was not approved for an app, the user must allow Codex "
-            "Computer Use to control that app once, in the Codex desktop app, then try again.")
-    return f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}{hint}"
+    return f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}\n({approved} Computer Use actions approved)"
+
+
+# Computer Use only asks for approval through a client, so `codex exec` (approval: never) always gets "not
+# approved". `codex app-server` sends each approval to us as an MCP elicitation. We accept ones from the
+# Computer Use / browser runtime (cua_repl) and decline the rest; shell commands stay inside the sandbox.
+COMPUTER_SERVERS = {"cua_repl"}
+APPROVALS = {"granular": {"mcp_elicitations": True, "rules": False, "sandbox_approval": False,
+                          "request_permissions": False, "skill_approval": False}}
+
+
+def app_server_turn(prompt, cwd, model):
+    p = subprocess.Popen([CODEX, "app-server"], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True)
+    lines = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(l) for l in p.stdout] + [lines.put(None)], daemon=True).start()
+    deadline, ids, texts, approved = time.time() + TIMEOUT, iter(range(1, 10**6)), [], 0
+
+    def send(msg):
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", **msg}) + "\n")
+        p.stdin.flush()
+
+    def pump(until):
+        """Read messages, answering server requests, until `until(msg)` returns a value."""
+        nonlocal approved
+        while True:
+            try:
+                line = lines.get(timeout=max(1, deadline - time.time()))
+            except queue.Empty:
+                raise subprocess.TimeoutExpired("codex app-server", TIMEOUT)
+            if line is None:
+                raise RuntimeError("codex app-server exited early")
+            try:
+                m = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "method" in m and "id" in m:  # request from Codex to us
+                prm = m.get("params") or {}
+                if m["method"] == "mcpServer/elicitation/request":
+                    ok = prm.get("serverName") in COMPUTER_SERVERS
+                    approved += ok
+                    send({"id": m["id"], "result": {"action": "accept" if ok else "decline", "content": {}}})
+                else:
+                    send({"id": m["id"], "error": {"code": -32000, "message": "not allowed by codex-relay"}})
+                continue
+            if m.get("method") == "item/completed" and (m["params"].get("item") or {}).get("type") == "agentMessage":
+                texts.append(m["params"]["item"].get("text", ""))
+            got = until(m)
+            if got is not None:
+                return got
+
+    def call(method, params):
+        i = next(ids)
+        send({"id": i, "method": method, "params": params})
+        r = pump(lambda m: m if m.get("id") == i and "method" not in m else None)
+        if "error" in r:
+            raise RuntimeError(f"codex app-server {method}: {r['error'].get('message')}")
+        return r["result"]
+
+    try:
+        call("initialize", {"clientInfo": {"name": "codex-relay", "version": "1.2.0"},
+                            "capabilities": {"experimentalApi": True}})
+        send({"method": "initialized"})
+        thread = call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": "workspace-write",
+                                       "approvalPolicy": APPROVALS, "ephemeral": True,
+                                       "config": {"sandbox_workspace_write": {"network_access": True}}})
+        tid = (thread.get("thread") or {}).get("id") or thread.get("threadId")
+        call("turn/start", {"threadId": tid, "input": [{"type": "text", "text": prompt}]})
+        turn = pump(lambda m: m["params"] if m.get("method") == "turn/completed" else None)
+        err = (turn.get("turn") or {}).get("error")
+        report = texts[-1] if texts else "(Codex returned no message)"
+        return (f"{report}\n\nCodex error: {err}" if err else report), approved
+    finally:
+        p.kill()
 
 
 HANDLERS = {"codex_review": codex_review, "codex_task": codex_task, "codex_ask": codex_ask,
