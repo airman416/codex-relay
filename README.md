@@ -1,6 +1,6 @@
 # codex-relay
 
-Claude writes the code. Codex (on Astra) does the computer use: it clicks through the running app to test a change, takes screenshots, and saves page DOM, then hands the result back to Claude. No copying PRs between agents, and you never leave the Claude app.
+Claude writes the code. Codex does the computer use in the Codex app: it clicks through the running app to test a change, takes screenshots, and saves page DOM, then hands the result back to Claude. No copying PRs between agents, and you never leave the Claude app.
 
 ## Install (let Claude do it)
 
@@ -21,7 +21,7 @@ Install the codex-relay plugin for me. Do these steps in order and stop to tell 
 
 ## Install (by hand)
 
-You need the [Codex CLI](https://github.com/openai/codex) signed in (`codex login`), the Codex desktop app with Computer Use set up, and `python3`.
+You need the Codex desktop app, the [Codex CLI](https://github.com/openai/codex) signed in (`codex login`), and `python3`.
 
 In Claude (desktop app Code tab, or `claude` in a terminal):
 
@@ -38,22 +38,13 @@ Ask Claude as you normally do:
 
 > Add a Sign up button to the home page, then have Codex test it at localhost:3000 and fix anything it finds.
 
-> Have Codex go through Timeback in Chrome, screenshot the leaderboard and save its DOM, then use them in the video.
+> Have Codex go through Timeback, screenshot the leaderboard and save its DOM, then use them in the video.
 
-> In the Codex app, have Codex screenshot the Timeback leaderboard so I can watch.
+The plugin gives Claude one tool, `codex_computer`. Each call opens a **new chat in the Codex app** with the task typed in and the in-app browser at the page. **Press Enter** to start it, then watch Codex work. When Codex finishes, Claude gets its report and the files it saved. The chats live under a "codex-relay" project in the Codex app (`~/Documents/Codex/codex-relay`).
 
-The plugin gives Claude one tool, `codex_computer`. Codex runs on `gpt-6-astra` unless Claude asks for another model, and returns its report plus the files it saved.
+The one Enter is required: the Codex app only pre-fills prompts that come from a link.
 
-| Mode | Clicks from you | Browser | Watch it |
-|---|---|---|---|
-| headless (default) | none | Chrome, through desktop Computer Use | Chrome on your screen |
-| app (`"in the Codex app"`) | one Enter per task | Codex in-app browser, with full page control | live, in a Codex app chat under the "codex-relay" project |
-
-App mode needs the one Enter because the Codex app only pre-fills prompts that come from a link.
-
-Safety: in headless mode Codex runs sandboxed with network access and can only write to its output folder. Its Computer Use actions are approved for that one call only, and approval requests from any other tool are declined.
-
-Settings (env vars): `CODEX_MODEL` (default `gpt-6-astra`), `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_START_WAIT` (default 300 s to press Enter in app mode), `CODEX_RELAY_APP_DIR` (default `~/Documents/Codex/codex-relay`).
+Settings (env vars): `CODEX_STEP_TIMEOUT` (default 1200 s for Codex to finish), `CODEX_RELAY_START_WAIT` (default 300 s to press Enter), `CODEX_RELAY_APP_DIR` (default `~/Documents/Codex/codex-relay`).
 
 ## Test
 
