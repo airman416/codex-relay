@@ -48,6 +48,8 @@ Ask Claude as you normally do:
 | `codex_task` | Codex does a task on its own git worktree and `codex/<id>` branch, so your checkout is never touched. Claude gets the report and can review or merge it. |
 | `codex_ask` | A read-only second opinion from Codex. |
 
+Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. Note: Codex's browser and computer use only work in the Codex desktop app, not through this plugin.
+
 Settings (env vars): `CODEX_MODEL`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
 
 ## Test

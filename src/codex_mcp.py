@@ -56,6 +56,7 @@ Use codex_task to hand off independent work. It runs on its own branch, so read 
 Use codex_ask for a second opinion on a design or a bug."""
 
 REPO = {"type": "string", "description": "Absolute path to a directory inside the git repository."}
+MODEL_ARG = {"type": "string", "description": "Optional Codex model for this call, e.g. gpt-6-astra (strongest; use for computer use, browser work and hard reviews), gpt-6.1-sol (default workhorse), gpt-6-luna (fast, cheap). Omit to use the user's Codex default."}
 TOOLS = [
     {"name": "codex_review",
      "description": "Codex reviews the current uncommitted changes (tracked and untracked) or, with `base`, "
@@ -64,7 +65,8 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["repo", "task"], "properties": {
          "repo": REPO,
          "task": {"type": "string", "description": "What the change is supposed to do, so Codex can judge it."},
-         "base": {"type": "string", "description": "Optional git ref, e.g. main. Default: HEAD (uncommitted work)."}}},
+         "base": {"type": "string", "description": "Optional git ref, e.g. main. Default: HEAD (uncommitted work)."},
+         "model": MODEL_ARG}},
      "annotations": {"readOnlyHint": True}},
     {"name": "codex_task",
      "description": "Hand a coding task to Codex. By default it works in a new git worktree on branch "
@@ -75,11 +77,12 @@ TOOLS = [
          "repo": REPO,
          "task": {"type": "string", "description": "Complete, self-contained instructions. Codex cannot see this chat."},
          "isolate": {"type": "boolean", "default": True,
-                     "description": "false = Codex edits the repo's working tree directly (no branch, no commit)."}}}},
+                     "description": "false = Codex edits the repo's working tree directly (no branch, no commit)."},
+         "model": MODEL_ARG}}},
     {"name": "codex_ask",
      "description": "Ask Codex a question about the repo (design, bug hunt, second opinion). Read-only.",
      "inputSchema": {"type": "object", "required": ["repo", "question"], "properties": {
-         "repo": REPO, "question": {"type": "string"}}},
+         "repo": REPO, "question": {"type": "string"}, "model": MODEL_ARG}},
      "annotations": {"readOnlyHint": True}},
 ]
 
@@ -94,10 +97,10 @@ def run(cmd, cwd, stdin=None, check=True):
     return r.stdout
 
 
-def codex(args, cwd, stdin=None, schema=None):
+def codex(args, cwd, stdin=None, schema=None, model=None):
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "last.txt"
-        cmd = [CODEX, "exec", "-C", str(cwd), "-o", str(out)] + (["-m", MODEL] if MODEL else [])
+        cmd = [CODEX, "exec", "-C", str(cwd), "-o", str(out)] + (["-m", model or MODEL] if model or MODEL else [])
         if schema:
             (Path(d) / "schema.json").write_text(json.dumps(schema))
             cmd += ["--output-schema", str(Path(d) / "schema.json")]
@@ -110,6 +113,13 @@ def git_root(path):
     if not p.is_absolute() or not p.is_dir():
         raise ValueError(f"repo must be an absolute path to an existing directory: {path!r}")
     return Path(run(["git", "rev-parse", "--show-toplevel"], p).strip())
+
+
+def model_arg(args):
+    m = str(args.get("model") or "").strip()
+    if m.startswith("-") or " " in m:
+        raise ValueError(f"bad model name: {m!r}")
+    return m or None
 
 
 def text_arg(args, key):
@@ -133,7 +143,7 @@ def codex_review(args):
         return f"No changes to review against {base}."
     if len(diff) > MAX_DIFF:
         diff = diff[:MAX_DIFF] + "\n[diff truncated; read the files for the rest]\n"
-    v = json.loads(codex(["-s", "read-only", REVIEW_PROMPT.format(task=task)], root, diff, VERDICT))
+    v = json.loads(codex(["-s", "read-only", REVIEW_PROMPT.format(task=task)], root, diff, VERDICT, model_arg(args)))
     head = "APPROVED" if v["approved"] else "CHANGES REQUESTED"
     issues = "\n".join(f"- [{i['severity']}] {i['file']}:{i['line']} {i['comment']}" for i in v["issues"])
     nxt = "" if v["approved"] else "\n\nFix the blocker/major issues, then call codex_review again."
@@ -143,12 +153,12 @@ def codex_review(args):
 def codex_task(args):
     root, task = git_root(args.get("repo")), text_arg(args, "task")
     if args.get("isolate", True) is False:
-        report = codex(["-s", "workspace-write", task], root)
+        report = codex(["-s", "workspace-write", task], root, model=model_arg(args))
         return f"Codex report:\n{report}\n\nWorking tree now:\n{run(['git', 'status', '--short'], root)}"
     tid = time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     branch, wt = f"codex/{tid}", HOME / "worktrees" / tid
     run(["git", "worktree", "add", "-b", branch, str(wt), "HEAD"], root)
-    report = codex(["-s", "workspace-write", task + "\n\nDo not commit; your changes are committed for you."], wt)
+    report = codex(["-s", "workspace-write", task + "\n\nDo not commit; your changes are committed for you."], wt, model=model_arg(args))
     run(["git", "add", "-A"], wt)
     stat = run(["git", "diff", "--cached", "--stat"], wt)
     if not stat.strip():
@@ -163,7 +173,7 @@ def codex_task(args):
 
 def codex_ask(args):
     root = git_root(args.get("repo"))
-    return codex(["-s", "read-only", text_arg(args, "question")], root) or "(Codex returned no answer)"
+    return codex(["-s", "read-only", text_arg(args, "question")], root, model=model_arg(args)) or "(Codex returned no answer)"
 
 
 HANDLERS = {"codex_review": codex_review, "codex_task": codex_task, "codex_ask": codex_ask}

@@ -16,7 +16,7 @@ elif opt("-s") == "workspace-write":
     open(opt("-C") + "/from_codex.txt", "w").write("hi\n")
     open(opt("-o"), "w").write("wrote from_codex.txt")
 else:
-    open(opt("-o"), "w").write("answer: " + a[-1])
+    open(opt("-o"), "w").write("answer: " + a[-1] + (" via " + opt("-m") if opt("-m") else ""))
 '''
 
 tmp = Path(tempfile.mkdtemp())
@@ -73,6 +73,8 @@ assert "from_codex.txt" in git("show", "--stat", branch)
 assert not (repo / "from_codex.txt").exists()  # caller's checkout untouched
 
 assert tool("codex_ask", repo=str(repo), question="why?") == (False, "answer: why?")
+assert tool("codex_ask", repo=str(repo), question="why?", model="gpt-6-astra") == (False, "answer: why? via gpt-6-astra")
+assert tool("codex_ask", repo=str(repo), question="why?", model="--yolo")[0]
 
 for bad in ({"repo": "relative", "task": "t"}, {"repo": str(repo), "task": " "},
             {"repo": str(repo), "task": "t", "base": "--output=/tmp/x"}):
