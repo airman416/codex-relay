@@ -16,7 +16,7 @@ Tools
                   Runs through `codex app-server`, so Codex's Computer Use approvals come back to this server.
 
 Env: CODEX_BIN (codex), CODEX_MODEL (Codex default), CODEX_STEP_TIMEOUT (1200 s),
-     CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees).
+     CODEX_RELAY_HOME (~/.codex-relay, holds the worktrees), CODEX_RELAY_OPEN_THREADS (1: open runs in the Codex app).
 """
 import json, os, queue, subprocess, sys, tempfile, threading, time, uuid
 from pathlib import Path
@@ -26,6 +26,8 @@ MODEL = os.environ.get("CODEX_MODEL")
 TIMEOUT = int(os.environ.get("CODEX_STEP_TIMEOUT", "1200"))
 HOME = Path(os.environ.get("CODEX_RELAY_HOME", Path.home() / ".codex-relay"))
 MAX_DIFF = 200_000  # chars sent to Codex
+# Review and computer-use runs are saved as named Codex threads; open each one in the Codex app as it starts.
+OPEN_THREADS = os.environ.get("CODEX_RELAY_OPEN_THREADS", "1") != "0"
 
 VERDICT = {
     "type": "object", "additionalProperties": False,
@@ -177,7 +179,8 @@ def codex_review(args):
         raise ValueError("url must start with http:// or https://")
     visual = VISUAL_URL.format(url=url) if url else VISUAL_AUTO
     prompt = REVIEW_PROMPT.format(task=task, visual=visual, diff=diff)
-    report, looked = app_server_turn(prompt, root, model_arg(args), sandbox="read-only", output_schema=VERDICT)
+    report, looked, tid = app_server_turn(prompt, root, model_arg(args), sandbox="read-only",
+                                          output_schema=VERDICT, name=f"codex-relay review: {task}")
     try:
         v = json.loads(report)
     except json.JSONDecodeError:
@@ -186,7 +189,7 @@ def codex_review(args):
     issues = "\n".join(f"- [{i['severity']}] {i['file']}:{i['line']} {i['comment']}" for i in v["issues"])
     nxt = "" if v["approved"] else "\n\nFix the blocker/major issues, then call codex_review again."
     seen = f"\n(Codex checked it in the browser: {looked} Computer Use actions)" if looked else ""
-    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}{seen}\n\n{json.dumps(v)}"
+    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}{seen}\nCodex thread: codex://threads/{tid}\n\n{json.dumps(v)}"
 
 
 def codex_task(args):
@@ -226,10 +229,11 @@ def codex_computer(args):
     prompt = (f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
               "Give each file the extension that matches its real format. When done, close any tabs or windows "
               "you opened, then list each file you saved and what it shows.")
-    report, approved = app_server_turn(prompt, out, model_arg(args))
+    report, approved, tid = app_server_turn(prompt, out, model_arg(args), name=f"codex-relay: {task}")
     new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
     files = "\n".join(new) or "(no files saved)"
-    return f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}\n({approved} Computer Use actions approved)"
+    return (f"Codex report:\n{report}\n\nFolder: {out}\nNew files:\n{files}\n({approved} Computer Use actions approved)\n"
+            f"Codex thread (every step Codex took): codex://threads/{tid}")
 
 
 # Computer Use only asks for approval through a client, so `codex exec` (approval: never) always gets "not
@@ -240,7 +244,7 @@ APPROVALS = {"granular": {"mcp_elicitations": True, "rules": False, "sandbox_app
                           "request_permissions": False, "skill_approval": False}}
 
 
-def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema=None):
+def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema=None, name="codex-relay"):
     p = subprocess.Popen([CODEX, "app-server"], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True)
     lines = queue.Queue()
@@ -293,17 +297,23 @@ def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema
                             "capabilities": {"experimentalApi": True}})
         send({"method": "initialized"})
         thread = call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": sandbox,
-                                       "approvalPolicy": APPROVALS, "ephemeral": True,
+                                       "approvalPolicy": APPROVALS, "ephemeral": False,
                                        "config": {"sandbox_workspace_write": {"network_access": True}}})
         tid = (thread.get("thread") or {}).get("id") or thread.get("threadId")
+        call("thread/name/set", {"threadId": tid, "name": " ".join(name.split())[:80]})
         turn_params = {"threadId": tid, "input": [{"type": "text", "text": prompt}]}
         if output_schema:
             turn_params["outputSchema"] = output_schema
         call("turn/start", turn_params)
+        if OPEN_THREADS:  # show the run in the Codex app (macOS `open`; harmless if it fails)
+            try:
+                subprocess.run(["open", f"codex://threads/{tid}"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
         turn = pump(lambda m: m["params"] if m.get("method") == "turn/completed" else None)
         err = (turn.get("turn") or {}).get("error")
         report = texts[-1] if texts else "(Codex returned no message)"
-        return (f"{report}\n\nCodex error: {err}" if err else report), approved
+        return (f"{report}\n\nCodex error: {err}" if err else report), approved, tid
     finally:
         p.kill()
 

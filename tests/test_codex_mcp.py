@@ -16,9 +16,13 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"id": m["id"], "result": {}})
         elif m.get("method") == "thread/start":
             prm = m["params"]
-            assert prm["sandbox"] in ("workspace-write", "read-only") and prm["ephemeral"]
+            assert prm["sandbox"] in ("workspace-write", "read-only") and prm["ephemeral"] is False
             assert prm["approvalPolicy"]["granular"]["mcp_elicitations"] and not prm["approvalPolicy"]["granular"]["sandbox_approval"]
             send({"id": m["id"], "result": {"thread": {"id": "t1"}}})
+        elif m.get("method") == "thread/name/set":
+            assert m["params"]["threadId"] == "t1"
+            name = m["params"]["name"]
+            send({"id": m["id"], "result": {}})
         elif m.get("method") == "turn/start" and m["params"].get("outputSchema"):  # codex_review
             send({"id": m["id"], "result": {}})
             text = m["params"]["input"][0]["text"]
@@ -41,7 +45,7 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"id": 902, "method": "item/commandExecution/requestApproval", "params": {}})
             r3 = recv()
             open("shot.png", "w").write("png")
-            msg = f"cua:{r1['result']['action']} other:{r2['result']['action']} cmd-refused:{'error' in r3}"
+            msg = f"cua:{r1['result']['action']} other:{r2['result']['action']} cmd-refused:{'error' in r3} name:{name}"
             send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": msg}}})
             send({"method": "turn/completed", "params": {"turn": {"id": "u1"}}})
             sys.exit(0)
@@ -66,7 +70,7 @@ git("config", "user.name", "t")
 git("add", "-A")
 git("commit", "-qm", "init")
 
-env = {**os.environ, "CODEX_BIN": str(fake), "CODEX_RELAY_HOME": str(tmp / "home")}
+env = {**os.environ, "CODEX_BIN": str(fake), "CODEX_RELAY_HOME": str(tmp / "home"), "CODEX_RELAY_OPEN_THREADS": "0"}
 srv = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent.parent / "src" / "codex_mcp.py")],
                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
 n = 0
@@ -100,6 +104,7 @@ err, text = tool("codex_review", repo=str(repo), task="t")
 assert not err and "APPROVED" in text and "checked it in the browser" not in text, text
 err, text = tool("codex_review", repo=str(repo), task="t", url="http://localhost:9/page")
 assert not err and "APPROVED" in text and "(Codex checked it in the browser: 1 Computer Use actions)" in text, text
+assert "Codex thread: codex://threads/t1" in text, text
 assert tool("codex_review", repo=str(repo), task="t", url="file:///etc/passwd")[0]
 
 err, text = tool("codex_task", repo=str(repo), task="add a file")
@@ -116,6 +121,7 @@ out = tmp / "captures"
 err, text = tool("codex_computer", task="screenshot example.com", dir=str(out))
 assert not err and "cua:accept other:decline cmd-refused:True" in text, text
 assert str(out / "shot.png") in text and "(1 Computer Use actions approved)" in text, text
+assert "name:codex-relay: screenshot example.com" in text and "codex://threads/t1" in text, text
 err, text = tool("codex_computer", task="x")  # default folder under CODEX_RELAY_HOME
 assert not err and str(tmp / "home" / "computer") in text, text
 assert tool("codex_computer", task="x", dir="/")[0] and tool("codex_computer", task="x", dir="rel")[0]

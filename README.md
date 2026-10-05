@@ -55,7 +55,11 @@ Ask Claude as you normally do:
 
 Every tool takes an optional `model`, so Claude can pick per call, for example: *"have Codex do this with gpt-6-astra"*. `codex_computer` needs the Codex desktop app with Computer Use set up (it uses Codex's own browser and Computer Use runtime). No other setup: Computer Use actions are approved only for the duration of each `codex_computer` call, approvals from any other tool are declined, and shell commands stay in Codex's sandbox.
 
-Settings (env vars): `CODEX_MODEL`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
+**Watch Codex work:** every `codex_review` and `codex_computer` run is saved as a named Codex thread ("codex-relay: …") and opens in the Codex app as it starts, so you can see each step Codex takes. Claude also gets the `codex://threads/<id>` link. Set `CODEX_RELAY_OPEN_THREADS=0` to stop the auto-open.
+
+Note: Codex's in-app browser only works for threads the Codex app runs itself, so codex-relay uses Chrome (you can watch it on screen).
+
+Settings (env vars): `CODEX_MODEL`, `CODEX_RELAY_OPEN_THREADS`, `CODEX_STEP_TIMEOUT` (default 1200 s), `CODEX_RELAY_HOME` (default `~/.codex-relay`).
 
 ## Test
 
