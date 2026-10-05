@@ -201,7 +201,8 @@ def codex_computer(args):
     out.mkdir(parents=True, exist_ok=True)
     before = {p for p in out.rglob("*") if p.is_file()}
     prompt = (f"{task}\n\nUse your browser or computer-use tools. Save every file you produce in {out}. "
-              "When done, list each file you saved and what it shows.")
+              "Give each file the extension that matches its real format. When done, close any tabs or windows "
+              "you opened, then list each file you saved and what it shows.")
     report, approved = app_server_turn(prompt, out, model_arg(args))
     new = sorted(str(p) for p in out.rglob("*") if p.is_file() and p not in before)
     files = "\n".join(new) or "(no files saved)"
