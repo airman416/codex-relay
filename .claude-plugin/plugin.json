@@ -1,7 +1,17 @@
 {
   "name": "codex-relay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Gives Claude Codex as a reviewer and a second worker: codex_review, codex_task, codex_ask.",
-  "author": { "name": "Armaan Agrawal" },
-  "repository": "https://github.com/airman416/codex-relay"
+  "author": {
+    "name": "Armaan Agrawal"
+  },
+  "repository": "https://github.com/airman416/codex-relay",
+  "mcpServers": {
+    "codex-relay": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/src/codex_mcp.py"
+      ]
+    }
+  }
 }
