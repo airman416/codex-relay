@@ -10,7 +10,7 @@ Claude writes the code. Codex does the computer use in the Codex app: it clicks 
 4. Codex does the work in the Codex app while you watch.
 5. When Codex finishes, its report and the files it saved go back to Claude automatically. Claude continues, for example it fixes the bug that Codex found.
 
-**Why you must press Enter:** codex-relay starts the chat with a link (`codex://new?prompt=…`). For safety, the Codex app never sends a prompt that comes from a link: it only types the prompt into a new chat and waits for a person to press Enter. This stops a web page, an email or any other program from running prompts on your Mac without you. So each handoff to Codex needs one Enter from you.
+**Why you must press Enter:** Claude could start Codex by itself only with Codex's permission checks turned off (no sandbox, no approvals), which is not safe. And only a chat in the Codex app has Codex's fast in-app browser. So Claude opens the chat with the task typed in, and you start it with one Enter.
 
 **Good to know:**
 - Each handoff opens a new chat, so each needs its own Enter. If Claude fixes something and asks Codex to test again, press Enter in the new chat too.
@@ -33,9 +33,9 @@ Install the codex-relay plugin for me. Do these steps in order and stop to tell 
 4. Run `claude plugin marketplace add airman416/codex-relay`
    then `claude plugin install codex-relay@codex-relay`.
 5. Run `claude mcp list` and confirm the codex-relay server shows "Connected".
-6. Explain to me in 3 short lines: each handoff to Codex opens a new Codex app chat, I must press
-   Enter there because the Codex app never sends a prompt that comes from a link (a safety rule),
-   and the result then comes back to Claude automatically.
+6. Explain to me in 2 short lines: each handoff to Codex opens a new Codex app chat that I start with
+   Enter, because starting Codex without me would turn off its permission checks, and only the Codex
+   app chat has the fast in-app browser.
 7. Tell me to start a new session, and give me one example prompt to try codex_computer.
 ```
 

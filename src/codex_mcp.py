@@ -28,9 +28,8 @@ OPEN_BIN = os.environ.get("CODEX_RELAY_OPEN_BIN", "open")
 INSTRUCTIONS = """Codex (OpenAI's agent, in the Codex app) is available for computer-use work.
 Write and fix code yourself. Hand computer use to codex_computer: open the running app or a site, click
 through it, check that a change looks and works right, take screenshots, save page DOM. Each call opens a
-new chat in the Codex app with the task typed in, and waits until the user presses Enter there (the Codex app
-never sends a prompt that comes from a link). You are blocked while it waits, so BEFORE every call tell the
-user exactly: "Press Enter in the new Codex chat to start it: the Codex app only runs a prompt from outside after you confirm it, and only that app chat has Codex's fast in-app browser."
+new chat in the Codex app with the task typed in, and waits until the user presses Enter there. You are blocked while it waits, so BEFORE every call tell the
+user exactly: "Press Enter in the new Codex chat to start it. Starting Codex without you would mean turning off all of its permission checks, and only a Codex app chat has Codex's fast in-app browser."
 It returns Codex's report and the files it saved. If it reports a problem in your change, fix the code and
 call it again (that needs another Enter)."""
 
@@ -40,7 +39,7 @@ TOOLS = [
                     "in-app browser, click through it, test that a change works, take screenshots, save page DOM "
                     "or data. Opens a new Codex app chat with the task typed in; the user presses Enter once and "
                     "can watch. Returns Codex's report and the files it saved. Can take minutes. You are blocked "
-                    "while it waits, so BEFORE every call tell the user exactly: \"Press Enter in the new Codex chat to start it: the Codex app only runs a prompt from outside after you confirm it, and only that app chat has Codex's fast in-app browser.\"",
+                    "while it waits, so BEFORE every call tell the user exactly: \"Press Enter in the new Codex chat to start it. Starting Codex without you would mean turning off all of its permission checks, and only a Codex app chat has Codex's fast in-app browser.\"",
      "inputSchema": {"type": "object", "required": ["task"], "properties": {
          "task": {"type": "string", "description": "Complete instructions: which app/site, what to do or check, "
                                                    "what to save. Codex cannot see this chat."},
@@ -82,7 +81,7 @@ class AppServer:
         self.deadline, self.timeout = time.time() + timeout, timeout
         threading.Thread(target=lambda: [self.lines.put(l) for l in self.p.stdout] + [self.lines.put(None)],
                          daemon=True).start()
-        self.call("initialize", {"clientInfo": {"name": "codex-relay", "version": "3.0.3"},
+        self.call("initialize", {"clientInfo": {"name": "codex-relay", "version": "3.0.4"},
                                  "capabilities": {"experimentalApi": True}})
         self.send({"method": "initialized"})
 
@@ -206,7 +205,7 @@ def main():
         if m == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"),
                       "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "codex-relay", "version": "3.0.3"},
+                      "serverInfo": {"name": "codex-relay", "version": "3.0.4"},
                       "instructions": INSTRUCTIONS}
         elif m == "tools/list":
             result = {"tools": TOOLS}
