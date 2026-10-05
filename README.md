@@ -2,7 +2,24 @@
 
 Codex as a tool for Claude. Claude writes the code, Codex reviews it, and Claude fixes the issues until Codex approves. You never leave the Claude app.
 
-## Install
+## Install (let Claude do it)
+
+Paste this into Claude (desktop app Code tab, or `claude` in a terminal):
+
+```
+Install the codex-relay plugin for me. Do these steps in order and stop to tell me if one fails:
+1. Run `python3 --version`. If python3 is missing, tell me to install it and stop.
+2. Run `codex --version`. If it is missing, install it with `npm install -g @openai/codex`
+   (or `brew install --cask codex` if npm is missing).
+3. Run `codex login status`. If I am not logged in, tell me to run `codex login` myself in a
+   terminal, wait for me to say done, then check again.
+4. Run `claude plugin marketplace add airman416/codex-relay`
+   then `claude plugin install codex-relay@codex-relay`.
+5. Run `claude mcp list` and confirm the codex-relay server shows "Connected".
+6. Tell me to start a new session, and give me one example prompt to try the Codex review loop.
+```
+
+## Install (by hand)
 
 You need the [Codex CLI](https://github.com/openai/codex), signed in (`codex login`), and `python3`.
 
