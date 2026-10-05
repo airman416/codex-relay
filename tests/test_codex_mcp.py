@@ -16,9 +16,22 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"id": m["id"], "result": {}})
         elif m.get("method") == "thread/start":
             prm = m["params"]
-            assert prm["sandbox"] == "workspace-write" and prm["ephemeral"]
+            assert prm["sandbox"] in ("workspace-write", "read-only") and prm["ephemeral"]
             assert prm["approvalPolicy"]["granular"]["mcp_elicitations"] and not prm["approvalPolicy"]["granular"]["sandbox_approval"]
             send({"id": m["id"], "result": {"thread": {"id": "t1"}}})
+        elif m.get("method") == "turn/start" and m["params"].get("outputSchema"):  # codex_review
+            send({"id": m["id"], "result": {}})
+            text = m["params"]["input"][0]["text"]
+            looked = "localhost:9" in text
+            if looked:  # a visual check: one Computer Use action that must be approved
+                send({"id": 800, "method": "mcpServer/elicitation/request", "params": {"serverName": "cua_repl"}})
+                assert recv()["result"]["action"] == "accept"
+            ok = "+fixed" in text
+            v = {"approved": ok, "summary": "ok" if ok else "add() is wrong",
+                 "issues": [] if ok else [{"severity": "major", "file": "a.py", "line": 1, "comment": "say fixed"}]}
+            send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": json.dumps(v)}}})
+            send({"method": "turn/completed", "params": {"turn": {"id": "u0"}}})
+            sys.exit(0)
         elif m.get("method") == "turn/start":
             send({"id": m["id"], "result": {}})
             send({"id": 900, "method": "mcpServer/elicitation/request", "params": {"serverName": "cua_repl"}})
@@ -32,13 +45,7 @@ if a[:1] == ["app-server"]:  # minimal JSON-RPC peer for codex_computer
             send({"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": msg}}})
             send({"method": "turn/completed", "params": {"turn": {"id": "u1"}}})
             sys.exit(0)
-stdin = "" if sys.stdin.isatty() else sys.stdin.read()
-if opt("--output-schema"):
-    ok = "+fixed" in stdin
-    v = {"approved": ok, "summary": "ok" if ok else "add() is wrong",
-         "issues": [] if ok else [{"severity": "major", "file": "a.py", "line": 1, "comment": "say fixed"}]}
-    open(opt("-o"), "w").write(json.dumps(v))
-elif opt("-s") == "workspace-write":
+if opt("-s") == "workspace-write":
     open(opt("-C") + "/from_codex.txt", "w").write("hi\n")
     open(opt("-o"), "w").write("wrote from_codex.txt")
 else:
@@ -90,7 +97,10 @@ assert not err and "CHANGES REQUESTED" in text and "a.py:1" in text, text
 
 (repo / "new.py").write_text("fixed\n")  # untracked file must reach the reviewer
 err, text = tool("codex_review", repo=str(repo), task="t")
-assert not err and "APPROVED" in text, text
+assert not err and "APPROVED" in text and "checked it in the browser" not in text, text
+err, text = tool("codex_review", repo=str(repo), task="t", url="http://localhost:9/page")
+assert not err and "APPROVED" in text and "(Codex checked it in the browser: 1 Computer Use actions)" in text, text
+assert tool("codex_review", repo=str(repo), task="t", url="file:///etc/passwd")[0]
 
 err, text = tool("codex_task", repo=str(repo), task="add a file")
 assert not err and "Branch: codex/" in text, text

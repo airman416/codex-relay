@@ -38,6 +38,8 @@ Ask Claude as you normally do:
 
 > Add rate limiting to /login, then loop with Codex review until it approves.
 
+> Add a Sign up button to the home page (running at localhost:3000), then loop with Codex review until it approves.
+
 > Have Codex write the migration for the new `orders` table while you do the API.
 
 > Ask Codex whether this caching approach has a race condition.
@@ -46,7 +48,7 @@ Ask Claude as you normally do:
 
 | Tool | What it does |
 |---|---|
-| `codex_review` | Codex reviews your uncommitted changes (or everything since `base`, e.g. `main`) and returns a verdict: approved, plus issues with severity, file, and line. |
+| `codex_review` | Codex reviews your uncommitted changes (or everything since `base`, e.g. `main`) and returns a verdict: approved, plus issues with severity, file, and line. For visible changes it also opens the running app in Chrome and checks it (give Claude the URL, e.g. `localhost:3000`). |
 | `codex_task` | Codex does a task on its own git worktree and `codex/<id>` branch, so your checkout is never touched. Claude gets the report and can review or merge it. |
 | `codex_ask` | A read-only second opinion from Codex. |
 | `codex_computer` | Codex uses its browser and computer use (open a site, click through it, take screenshots, save the DOM) and returns the files it saved. Runs sandboxed with network access; it can only write to its output folder. |

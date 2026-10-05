@@ -9,6 +9,7 @@ Then ask Claude as usual, e.g. "add rate limiting to /login, loop with Codex rev
 
 Tools
   codex_review  Codex reviews the working-tree diff (or the diff against a base ref) and returns a JSON verdict.
+                For visible changes it also opens the running app in Chrome (Computer Use) and checks it.
   codex_task    Codex does a task on its own git worktree and branch, so it never touches Claude's checkout.
   codex_ask     A read-only second opinion from Codex about the repo.
   codex_computer  Codex uses its browser / computer use (e.g. screenshots and DOM of a web app) and saves files.
@@ -41,17 +42,29 @@ VERDICT = {
                 "line": {"type": "integer"},
                 "comment": {"type": "string"}}}}}}
 
-REVIEW_PROMPT = """You are reviewing a diff (on stdin) that another agent wrote for this task:
+REVIEW_PROMPT = """You are reviewing a diff that another agent wrote for this task:
 
 TASK: {task}
 
 Check correctness, bugs, security, missing edge cases, and whether the diff actually does the task.
 Read files in the repo for context if needed, but do not edit anything. Approve only if there are no
 blocker or major issues; minor issues alone do not block. Use line 0 when an issue has no single line.
-Reply with the JSON verdict only."""
+{visual}
+Reply with the JSON verdict only.
+
+DIFF:
+{diff}"""
+
+VISUAL_URL = """The change is running at {url}. Open it in Chrome with your browser / computer-use tools and check
+that it looks and behaves as the task says. Report what you see there as issues if it is wrong (file "{url}").
+Close any tabs you opened."""
+VISUAL_AUTO = """If the change affects something visible (a web page, UI, or app) and you can find where it runs
+(for example a localhost URL in the task or the repo's dev config), open it in Chrome with your browser /
+computer-use tools and check it. Close any tabs you opened. Skip this for changes with nothing to look at."""
 
 INSTRUCTIONS = """Codex (OpenAI's coding agent) is available as a reviewer and a second worker.
 Review loop: after you change code, call codex_review with the repo and what the change must do.
+If the change is visible (a page, UI, app) and it is running, pass its URL so Codex also checks it in Chrome.
 Fix every blocker and major issue, then call codex_review again. Stop when it approves or after 3 rounds,
 and tell the user about any issue you chose not to fix and why.
 Use codex_task to hand off independent work. It runs on its own branch, so read its diff before you merge it.
@@ -64,12 +77,16 @@ MODEL_ARG = {"type": "string", "description": "Optional Codex model for this cal
 TOOLS = [
     {"name": "codex_review",
      "description": "Codex reviews the current uncommitted changes (tracked and untracked) or, with `base`, "
-                    "everything since that ref. Returns a JSON verdict {approved, summary, issues[]}. "
+                    "everything since that ref. For visible changes Codex also opens the running app in Chrome "
+                    "(pass `url`) and checks it. Returns a JSON verdict {approved, summary, issues[]}. "
                     "Fix blocker/major issues and call again until approved.",
      "inputSchema": {"type": "object", "required": ["repo", "task"], "properties": {
          "repo": REPO,
          "task": {"type": "string", "description": "What the change is supposed to do, so Codex can judge it."},
          "base": {"type": "string", "description": "Optional git ref, e.g. main. Default: HEAD (uncommitted work)."},
+         "url": {"type": "string", "description": "Optional URL where the change is running (e.g. "
+                                                 "http://localhost:3000/signup). Codex opens it in Chrome and checks it "
+                                                 "visually. Without it, Codex checks visible changes when it can find them."},
          "model": MODEL_ARG}},
      "annotations": {"readOnlyHint": True}},
     {"name": "codex_task",
@@ -103,24 +120,20 @@ TOOLS = [
 ]
 
 
-def run(cmd, cwd, stdin=None, check=True):
+def run(cmd, cwd, check=True):
     # stdin must never be inherited: it is the MCP channel.
-    io = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=TIMEOUT, **io)
+    r = subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TIMEOUT)
     if check and r.returncode:
         raise RuntimeError(f"{Path(cmd[0]).name} {cmd[1] if len(cmd) > 1 else ''} exited {r.returncode}: "
                            f"{(r.stderr or r.stdout).strip()[-1500:]}")
     return r.stdout
 
 
-def codex(args, cwd, stdin=None, schema=None, model=None):
+def codex(args, cwd, model=None):
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "last.txt"
         cmd = [CODEX, "exec", "-C", str(cwd), "-o", str(out)] + (["-m", model or MODEL] if model or MODEL else [])
-        if schema:
-            (Path(d) / "schema.json").write_text(json.dumps(schema))
-            cmd += ["--output-schema", str(Path(d) / "schema.json")]
-        run(cmd + args, cwd, stdin)
+        run(cmd + args, cwd)
         return out.read_text().strip() if out.exists() else ""
 
 
@@ -159,11 +172,21 @@ def codex_review(args):
         return f"No changes to review against {base}."
     if len(diff) > MAX_DIFF:
         diff = diff[:MAX_DIFF] + "\n[diff truncated; read the files for the rest]\n"
-    v = json.loads(codex(["-s", "read-only", REVIEW_PROMPT.format(task=task)], root, diff, VERDICT, model_arg(args)))
+    url = str(args.get("url") or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        raise ValueError("url must start with http:// or https://")
+    visual = VISUAL_URL.format(url=url) if url else VISUAL_AUTO
+    prompt = REVIEW_PROMPT.format(task=task, visual=visual, diff=diff)
+    report, looked = app_server_turn(prompt, root, model_arg(args), sandbox="read-only", output_schema=VERDICT)
+    try:
+        v = json.loads(report)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Codex did not return a verdict:\n{report[-1500:]}") from None
     head = "APPROVED" if v["approved"] else "CHANGES REQUESTED"
     issues = "\n".join(f"- [{i['severity']}] {i['file']}:{i['line']} {i['comment']}" for i in v["issues"])
     nxt = "" if v["approved"] else "\n\nFix the blocker/major issues, then call codex_review again."
-    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}\n\n{json.dumps(v)}"
+    seen = f"\n(Codex checked it in the browser: {looked} Computer Use actions)" if looked else ""
+    return f"Codex review: {head}\n{v['summary']}\n{issues}{nxt}{seen}\n\n{json.dumps(v)}"
 
 
 def codex_task(args):
@@ -217,7 +240,7 @@ APPROVALS = {"granular": {"mcp_elicitations": True, "rules": False, "sandbox_app
                           "request_permissions": False, "skill_approval": False}}
 
 
-def app_server_turn(prompt, cwd, model):
+def app_server_turn(prompt, cwd, model, sandbox="workspace-write", output_schema=None):
     p = subprocess.Popen([CODEX, "app-server"], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True)
     lines = queue.Queue()
@@ -269,11 +292,14 @@ def app_server_turn(prompt, cwd, model):
         call("initialize", {"clientInfo": {"name": "codex-relay", "version": "1.2.0"},
                             "capabilities": {"experimentalApi": True}})
         send({"method": "initialized"})
-        thread = call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": "workspace-write",
+        thread = call("thread/start", {"cwd": str(cwd), "model": model or MODEL, "sandbox": sandbox,
                                        "approvalPolicy": APPROVALS, "ephemeral": True,
                                        "config": {"sandbox_workspace_write": {"network_access": True}}})
         tid = (thread.get("thread") or {}).get("id") or thread.get("threadId")
-        call("turn/start", {"threadId": tid, "input": [{"type": "text", "text": prompt}]})
+        turn_params = {"threadId": tid, "input": [{"type": "text", "text": prompt}]}
+        if output_schema:
+            turn_params["outputSchema"] = output_schema
+        call("turn/start", turn_params)
         turn = pump(lambda m: m["params"] if m.get("method") == "turn/completed" else None)
         err = (turn.get("turn") or {}).get("error")
         report = texts[-1] if texts else "(Codex returned no message)"
