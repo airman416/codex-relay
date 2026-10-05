@@ -1,6 +1,6 @@
 {
   "name": "codex-relay",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Lets Claude hand computer-use work (testing the running app, screenshots, page DOM) to Codex on Astra and get the result back.",
   "author": {
     "name": "Armaan Agrawal"
